@@ -3,3 +3,23 @@
 ## Overview
 Study Buddy LLM is a project designed to help students by summarizing the content of videos and articles into eBooks. By leveraging Retrieval-Augmented Generation (RAG) techniques, this intelligent assistant provides concise and accurate summaries, making it easier for students to review and study materials.
 
+## Installation
+
+1. Clone Repository:
+    ```
+    git clone https://github.com/bruna-calistrate/study-buddy-llm.git
+    ```
+
+2. Install Poetry:
+    ```
+    pip install poetry
+    ```
+3. Install dependencies:
+   ```
+   poetry install
+   ```
+
+4. Enter virtual environment:
+   ```
+   poetry shell
+   ```
