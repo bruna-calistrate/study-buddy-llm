@@ -23,3 +23,7 @@ Study Buddy LLM is a project designed to help students by summarizing the conten
    ```
    poetry shell
    ```
+
+## Environment Variables
+
+To run this project you will need a Google Gemini API Key.
