@@ -25,6 +25,10 @@ Inspired by [Shubhamsaboo/awesome-llm-apps](https://github.com/Shubhamsaboo/awes
    ```
    poetry shell
    ```
+5. Run the streamlit server:
+   ```
+   task run
+   ```
 
 ## Environment Variables
 
