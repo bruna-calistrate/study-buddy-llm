@@ -12,6 +12,68 @@ scrapegraphai = "^1.5.2"
 pydantic = "^2.7.2"
 
 
+[tool.poetry.group.dev.dependencies]
+black = "^24.4.2"
+ruff = "^0.4.6"
+taskipy = "^1.12.2"
+isort = "^5.13.2"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+line-length = 100
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+extend_skip = ['migrations']
+
+[tool.taskipy.tasks]
+lint = 'ruff . && black --check . --diff'
+format = 'black .  && isort .'
+run = 'uvicorn app.main:create_app --reload --log-config=log_conf.yaml'
+pre_test = 'task lint'
+test = 'pytest -s -x --cov=app -vv'
+post_test = 'coverage html'
