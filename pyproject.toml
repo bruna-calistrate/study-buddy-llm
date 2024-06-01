@@ -9,6 +9,7 @@ readme = "README.md"
 python = "^3.11"
 streamlit = "^1.35.0"
 scrapegraphai = "^1.5.2"
+nest-asyncio = "^1.6.0"
 
 
 [tool.poetry.group.dev.dependencies]
