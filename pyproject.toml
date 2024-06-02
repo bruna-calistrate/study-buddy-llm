@@ -6,10 +6,16 @@ authors = ["Bruna Calistrate <bruna.calistrate@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = ">=3.11,<3.13"
 streamlit = "^1.35.0"
-scrapegraphai = "^1.5.2"
 nest-asyncio = "^1.6.0"
+langchain = "^0.2.1"
+langchain-google-genai = "^1.0.5"
+langchain-community = "^0.2.1"
+langchain-core = "^0.2.3"
+langchain-pinecone = "^0.1.1"
+python-dotenv = "^1.0.1"
+apify-client = "^1.7.0"
 
 
 [tool.poetry.group.dev.dependencies]
