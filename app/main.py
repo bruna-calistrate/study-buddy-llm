@@ -47,6 +47,7 @@ class ArticleScraper:
             google_api_key=self.gemini_key,
             model="models/text-embedding-004",
             task_type="retrieval_document",
+            title="article scrapping"
         )
         self.vectordb = PineconeVectorStore(
             pinecone_api_key=self.pinecone_key,
@@ -70,12 +71,12 @@ class ArticleScraper:
         )
         documents = loader.load()
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500, chunk_overlap=100
+            chunk_size=1000, chunk_overlap=100
         )
         docs = text_splitter.split_documents(documents)
 
         self.vectordb.from_documents(
-            documents=docs, 
+            documents=docs,
             embedding=self.embedding_function,
             index_name="study-buddy-test",
         )
@@ -85,13 +86,15 @@ class ArticleScraper:
     def get_retriever(self):
         return self.vectordb.as_retriever(search_type="mmr")
 
-    def create_conversation_chain(self, model):
-        msgs = StreamlitChatMessageHistory()
+    def create_conversation_chain(self, gemini_model):
+        messages = StreamlitChatMessageHistory()
         memory = ConversationBufferMemory(
-            memory_key="chat_history", chat_memory=msgs, return_messages=True
+            memory_key="chat_history",
+            chat_memory=messages,
+            return_messages=True,
         )
         llm_model = ChatGoogleGenerativeAI(
-            model=f"model/{model}",
+            model=f"model/{gemini_model}",
             temperature=0,
             google_api_key=self.gemini_key,
         )
@@ -101,7 +104,7 @@ class ArticleScraper:
             memory=memory,
             verbose=False,
         )
-        return msgs, qa_chain
+        return messages, qa_chain
 
 
 st.title("Study Buddy - Article Scrapping")
@@ -121,7 +124,7 @@ if st.button("Scrape"):
     scraper = ArticleScraper(article_url=url)
     scraper.scrape_article()
 
-    msgs, qa_chain = scraper.create_conversation_chain(model=model)
+    msgs, qa = scraper.create_conversation_chain(gemini_model=model)
 
     if st.sidebar.button("Clear message history") or len(msgs.messages) == 0:
         msgs.clear()
@@ -136,4 +139,4 @@ if st.button("Scrape"):
 
         with st.chat_message("assistant"):
             stream_handler = StreamHandler(st.empty())
-            response = qa_chain.run(user_query, callbacks=[stream_handler])
+            response = qa.run(user_query, callbacks=[stream_handler])
