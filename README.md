@@ -3,7 +3,7 @@
 ## Overview
 Study Buddy LLM is a project designed to help students by summarizing the content of videos and articles into eBooks. By leveraging Retrieval-Augmented Generation (RAG) techniques, this intelligent assistant provides concise and accurate summaries, making it easier for students to review and study materials.
 
-Inspired by [apify/chat-with-a-website](https://github.com/apify/chat-with-a-website/blob/main/scrape.py).
+Inspired by [apify/chat-with-a-website](https://github.com/apify/chat-with-a-website/).
 
 ## Installation
 
