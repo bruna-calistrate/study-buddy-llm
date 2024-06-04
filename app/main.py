@@ -129,7 +129,7 @@ class ArticleScraper:
             index_name=self.pinecone_index,
             namespace=self.extract_namespace(),
         )
-    
+
     def check_pinecone_db(self):
         if self.pinecone_index in self.pinecone_client.list_indexes().names():
             self.start_vectordb()
@@ -161,29 +161,26 @@ class ArticleScraper:
             )
             print(datetime.now(), "All done!")
 
-    @st.cache_resource(ttl="1h")
-    def get_retriever(self):
-        return self.vectordb.as_retriever(search_type="mmr")
+def extract_namespace(url):
+    domain = url.split(".")[1]
+    title = url.split("/")[-1] if "/" in url else "no-title"
+    return f"{domain}-{title}"
 
-    def create_conversation_chain(self, gemini_model):
-        messages = StreamlitChatMessageHistory()
-        memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            chat_memory=messages,
-            return_messages=True,
-        )
-        llm_model = ChatGoogleGenerativeAI(
-            model=f"model/{gemini_model}",
-            temperature=0.3,
-            google_api_key=self.gemini_key,
-        )
-        qa_chain = ConversationalRetrievalChain.from_llm(
-            llm_model,
-            retriever=self.get_retriever(),
-            memory=memory,
-            verbose=False,
-        )
-        return messages, qa_chain
+@st.cache_resource(ttl="1h")
+def get_retriever():
+    embedding_function = GoogleGenerativeAIEmbeddings(
+        google_api_key=os.environ["GOOGLE_API_KEY"],
+        model="models/text-embedding-004",
+        task_type="retrieval_document",
+        title="article scrapping",
+    )
+    vectordb = PineconeVectorStore(
+        pinecone_api_key=os.environ["PINECONE_API_KEY"],
+        embedding=embedding_function,
+        index_name="studdy-buddy-test",
+        namespace=extract_namespace(url),
+    )
+    return vectordb.as_retriever(search_type="mmr")
 
 
 st.title("Study Buddy - Article Scrapping")
@@ -201,10 +198,28 @@ url = st.text_input("Enter the URL of the article you want to study")
 if st.button("Scrape"):
     scraper = ArticleScraper(article_url=url)
     scraper.save_to_pinecone()
+    
+    retriever = get_retriever()
+    
+    msgs = StreamlitChatMessageHistory()
+    memory = ConversationBufferMemory(
+        memory_key="chat_history",
+        chat_memory=msgs,
+        return_messages=True,
+    )
+    llm_model = ChatGoogleGenerativeAI(
+        model=f"model/{model}",
+        temperature=0.3,
+        google_api_key=os.environ["GOOGLE_API_KEY"],
+    )
+    qa_chain = ConversationalRetrievalChain.from_llm(
+        llm_model,
+        retriever=retriever,
+        memory=memory,
+        verbose=False,
+    )
 
-    msgs, qa = scraper.create_conversation_chain(gemini_model=model)
-
-    if st.sidebar.button("Clear message history") or len(msgs.messages) == 0:
+    if st.sidebar.button("Clear message history"):
         msgs.clear()
         msgs.add_ai_message(f"Ask me anything about {url}!")
 
@@ -217,4 +232,4 @@ if st.button("Scrape"):
 
         with st.chat_message("assistant"):
             stream_handler = StreamHandler(st.empty())
-            response = qa.run(user_query, callbacks=[stream_handler])
+            response = qa_chain.run(user_query, callbacks=[stream_handler])
