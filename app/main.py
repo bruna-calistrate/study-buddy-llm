@@ -16,6 +16,8 @@ from langchain_community.chat_message_histories import (
     StreamlitChatMessageHistory,
 )
 from langchain_community.document_loaders import ApifyDatasetLoader
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_google_genai import (
     ChatGoogleGenerativeAI,
     GoogleGenerativeAIEmbeddings,
@@ -81,12 +83,8 @@ class ArticleScraper:
         return None
 
     def load_documents(self):
-        print(
-            datetime.now(), f"Extracting data from '{self.url}'. Please wait..."
-        )
         check_last_run = self.check_loaded_documents()
         if isinstance(check_last_run, dict):
-            print(datetime.now(), "Loading documents. Please wait...")
             loader_list = []
             for data in check_last_run:
                 doc = Document(
@@ -99,7 +97,6 @@ class ArticleScraper:
         actor_run_info = self.apify_client.actor(self.apify_actor).call(
             run_input={"startUrls": [{"url": self.url}]}
         )
-        print(datetime.now(), "Loading documents. Please wait...")
         loader = ApifyDatasetLoader(
             dataset_id=actor_run_info["defaultDatasetId"],
             dataset_mapping_function=lambda item: Document(
@@ -115,11 +112,6 @@ class ArticleScraper:
             chunk_size=1000, chunk_overlap=100
         )
         chunks = text_splitter.split_documents(documents)
-
-        print(
-            datetime.now(),
-            f"Split {len(documents)} documents into {len(chunks)} chunks.",
-        )
         return chunks
 
     def start_vectordb(self):
@@ -159,12 +151,17 @@ class ArticleScraper:
                 index_name=self.pinecone_index,
                 namespace=self.extract_namespace(),
             )
-            print(datetime.now(), "All done!")
+
+
+def click_button():
+    st.session_state.clicked = True
+
 
 def extract_namespace(url):
     domain = url.split(".")[1]
     title = url.split("/")[-1] if "/" in url else "no-title"
     return f"{domain}-{title}"
+
 
 @st.cache_resource(ttl="1h")
 def get_retriever():
@@ -177,14 +174,16 @@ def get_retriever():
     vectordb = PineconeVectorStore(
         pinecone_api_key=os.environ["PINECONE_API_KEY"],
         embedding=embedding_function,
-        index_name="studdy-buddy-test",
+        index_name="study-buddy-test",
         namespace=extract_namespace(url),
     )
     return vectordb.as_retriever(search_type="mmr")
 
-
+st.set_page_config(page_title="Study Buddy", page_icon="🦾")
 st.title("Study Buddy - Article Scrapping")
-st.caption("This app allows you to scrape a website using Google Gemini.")
+st.caption(
+    "This app allows you to scrape a website and chat with it using Google Gemini."
+)
 model = st.radio(
     "Select model:",
     [
@@ -193,39 +192,62 @@ model = st.radio(
     ],
     index=0,
 )
-url = st.text_input("Enter the URL of the article you want to study")
+llm_model = ChatGoogleGenerativeAI(
+    model=model,
+    temperature=0.3,
+    google_api_key=os.environ["GOOGLE_API_KEY"],
+)
 
-if st.button("Scrape"):
+url = st.text_input("Enter the URL of the article you want to study")
+if "clicked" not in st.session_state:
+    st.session_state.clicked = False
+
+st.button("Scrape", on_click=click_button)
+if st.session_state.clicked:
     scraper = ArticleScraper(article_url=url)
     scraper.save_to_pinecone()
-    
     retriever = get_retriever()
-    
-    msgs = StreamlitChatMessageHistory()
+
+    msgs = StreamlitChatMessageHistory(key="langchain_messages")
     memory = ConversationBufferMemory(
         memory_key="chat_history",
         chat_memory=msgs,
         return_messages=True,
     )
-    llm_model = ChatGoogleGenerativeAI(
-        model=f"model/{model}",
-        temperature=0.3,
-        google_api_key=os.environ["GOOGLE_API_KEY"],
-    )
+
+    if st.sidebar.button("Clear message history"):
+        msgs.clear()
+    if len(msgs.messages) == 0:
+        msgs.add_ai_message(f"Ask me anything about {url}!")
+
+    # prompt = ChatPromptTemplate.from_messages(
+    #     [
+    #         (
+    #             "system",
+    #             f"You are an AI chabot having a conversation with a human about the data extracted from {url}",
+    #         ),
+    #         MessagesPlaceholder(variable_name="history"),
+    #         ("human", "{question}"),
+    #     ]
+    # )
+
+    # conversation_chain = prompt | llm_model
+    # chain_with_history = RunnableWithMessageHistory(
+    #     conversation_chain,
+    #     lambda session_id: msgs,
+    #     input_messages_key="question",
+    #     history_messages_key="history",
+    # )
     qa_chain = ConversationalRetrievalChain.from_llm(
-        llm_model,
+        llm=llm_model,
         retriever=retriever,
+        return_source_documents=True,
         memory=memory,
         verbose=False,
     )
 
-    if st.sidebar.button("Clear message history"):
-        msgs.clear()
-        msgs.add_ai_message(f"Ask me anything about {url}!")
-
-    avatars = {"human": "user", "ai": "assistant"}
-    for msg in msgs.messages:
-        st.chat_message(avatars[msg.type]).write(msg.content)
+    # for msg in msgs.messages:
+    #     st.chat_message(msg.type).write(msg.content)
 
     if user_query := st.chat_input(placeholder="Ask me anything!"):
         st.chat_message("user").write(user_query)
@@ -233,3 +255,14 @@ if st.button("Scrape"):
         with st.chat_message("assistant"):
             stream_handler = StreamHandler(st.empty())
             response = qa_chain.run(user_query, callbacks=[stream_handler])
+            # print(response)
+        st.chat_message("assistant").write(response)
+
+    # for msg in msgs.messages:
+    #     st.chat_message(msg.type).write(msg.content)
+
+    # if prompt := st.chat_input(placeholder="Ask me anything!"):
+    #     st.chat_message("human").write(prompt)
+    #     config = {"configurable": {"session_id": "unused"}}
+    #     response = chain_with_history.invoke({"question": prompt}, config)
+    #     st.chat_message("ai").write(response.content)
