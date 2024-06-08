@@ -6,9 +6,9 @@ import streamlit as st
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 from langchain.callbacks.base import BaseCallbackHandler
-from langchain.chains.conversational_retrieval.base import (
-    ConversationalRetrievalChain,
-)
+from langchain.chains.retrieval import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains.history_aware_retriever import create_history_aware_retriever
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -16,6 +16,7 @@ from langchain_community.chat_message_histories import (
     StreamlitChatMessageHistory,
 )
 from langchain_community.document_loaders import ApifyDatasetLoader
+from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_google_genai import (
@@ -162,6 +163,11 @@ def extract_namespace(url):
     title = url.split("/")[-1] if "/" in url else "no-title"
     return f"{domain}-{title}"
 
+store = {}
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    if session_id not in store:
+        store[session_id] = StreamlitChatMessageHistory(key="langchain_messages")
+    return store[session_id]
 
 @st.cache_resource(ttl="1h")
 def get_retriever():
@@ -192,13 +198,20 @@ model = st.radio(
     ],
     index=0,
 )
+temperature = st.slider(
+    label="Select model's temperature:",
+    min_value=0.0, 
+    max_value=1.0, 
+    value=0.3, 
+    step=0.1
+)
 llm_model = ChatGoogleGenerativeAI(
     model=model,
-    temperature=0.3,
+    temperature=temperature,
     google_api_key=os.environ["GOOGLE_API_KEY"],
 )
 
-url = st.text_input("Enter the URL of the article you want to study")
+url = st.text_input("Enter the URL of the article you want to study:")
 if "clicked" not in st.session_state:
     st.session_state.clicked = False
 
@@ -220,49 +233,65 @@ if st.session_state.clicked:
     if len(msgs.messages) == 0:
         msgs.add_ai_message(f"Ask me anything about {url}!")
 
-    # prompt = ChatPromptTemplate.from_messages(
-    #     [
-    #         (
-    #             "system",
-    #             f"You are an AI chabot having a conversation with a human about the data extracted from {url}",
-    #         ),
-    #         MessagesPlaceholder(variable_name="history"),
-    #         ("human", "{question}"),
-    #     ]
-    # )
+    contextualize_question_system_prompt = """
+    Given the chat history and the latest user question, which might reference 
+    context in the chat history, formulate a standalone question which can be 
+    undestood without the chat history. Do not answer the question, just reformulate 
+    it if needed, otherwise return it as is.
+    """
+    qa_system_prompt = """
+    You are a personalized assistant for question answering tasks for students. Use 
+    the following retrieved context to answer the question. If you don't know the 
+    answer, say that you don't know. Keep the answer concise.
+    
+    Context: 
+    <<<
+    {context}
+    >>>
+    """
+    contextualize_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", contextualize_question_system_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{input}"),
+        ]
+    )
+    qa_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", qa_system_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{input}"),
+        ]
+    )
+    history_aware_retriever = create_history_aware_retriever(
+        llm_model, retriever, contextualize_prompt
+    )
+    question_answer_chain = create_stuff_documents_chain(llm_model, qa_prompt)
+    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-    # conversation_chain = prompt | llm_model
-    # chain_with_history = RunnableWithMessageHistory(
-    #     conversation_chain,
-    #     lambda session_id: msgs,
-    #     input_messages_key="question",
-    #     history_messages_key="history",
-    # )
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm_model,
-        retriever=retriever,
-        return_source_documents=True,
-        memory=memory,
-        verbose=False,
+    conversational_rag_chain = RunnableWithMessageHistory(
+        rag_chain,
+        get_session_history,
+        input_messages_key="input",
+        history_messages_key="history",
+        output_messages_key="answer",
     )
 
-    # for msg in msgs.messages:
-    #     st.chat_message(msg.type).write(msg.content)
+    for msg in msgs.messages:
+        st.chat_message(msg.type).write(msg.content)
 
     if user_query := st.chat_input(placeholder="Ask me anything!"):
         st.chat_message("user").write(user_query)
 
         with st.chat_message("assistant"):
             stream_handler = StreamHandler(st.empty())
-            response = qa_chain.run(user_query, callbacks=[stream_handler])
-            # print(response)
-        st.chat_message("assistant").write(response)
+            print(user_query)
+            print(store)
+            response = conversational_rag_chain.invoke(
+                input={"input": user_query},
+                config={
+                    "configurable": {"session_id": "test_1"}
+                }
+            )
+        st.chat_message("assistant").write(response["answer"])
 
-    # for msg in msgs.messages:
-    #     st.chat_message(msg.type).write(msg.content)
-
-    # if prompt := st.chat_input(placeholder="Ask me anything!"):
-    #     st.chat_message("human").write(prompt)
-    #     config = {"configurable": {"session_id": "unused"}}
-    #     response = chain_with_history.invoke({"question": prompt}, config)
-    #     st.chat_message("ai").write(response.content)
