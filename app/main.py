@@ -215,12 +215,18 @@ url = st.text_input("Enter the URL of the article you want to study:")
 if "clicked" not in st.session_state:
     st.session_state.clicked = False
 
+if "scraped" not in st.session_state:
+    st.session_state.scraped = False
+
 st.button("Scrape", on_click=click_button)
 if st.session_state.clicked:
-    scraper = ArticleScraper(article_url=url)
-    scraper.save_to_pinecone()
-    retriever = get_retriever()
+    with st.spinner(text="Scraping article..."):
+        scraper = ArticleScraper(article_url=url)
+        scraper.save_to_pinecone()
+    st.session_state.scraped = True
 
+if st.session_state.scraped:
+    retriever = get_retriever()
     msgs = StreamlitChatMessageHistory(key="langchain_messages")
     memory = ConversationBufferMemory(
         memory_key="chat_history",
@@ -285,13 +291,11 @@ if st.session_state.clicked:
 
         with st.chat_message("assistant"):
             stream_handler = StreamHandler(st.empty())
-            print(user_query)
-            print(store)
             response = conversational_rag_chain.invoke(
                 input={"input": user_query},
                 config={
                     "configurable": {"session_id": "test_1"}
                 }
             )
-        st.chat_message("assistant").write(response["answer"])
+            st.write(response["answer"])
 
