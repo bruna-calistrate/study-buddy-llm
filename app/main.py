@@ -6,9 +6,9 @@ import streamlit as st
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 from langchain.callbacks.base import BaseCallbackHandler
-from langchain.chains.conversational_retrieval.base import (
-    ConversationalRetrievalChain,
-)
+from langchain.chains.retrieval import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains.history_aware_retriever import create_history_aware_retriever
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -16,6 +16,9 @@ from langchain_community.chat_message_histories import (
     StreamlitChatMessageHistory,
 )
 from langchain_community.document_loaders import ApifyDatasetLoader
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_google_genai import (
     ChatGoogleGenerativeAI,
     GoogleGenerativeAIEmbeddings,
@@ -81,12 +84,8 @@ class ArticleScraper:
         return None
 
     def load_documents(self):
-        print(
-            datetime.now(), f"Extracting data from '{self.url}'. Please wait..."
-        )
         check_last_run = self.check_loaded_documents()
         if isinstance(check_last_run, dict):
-            print(datetime.now(), "Loading documents. Please wait...")
             loader_list = []
             for data in check_last_run:
                 doc = Document(
@@ -99,7 +98,6 @@ class ArticleScraper:
         actor_run_info = self.apify_client.actor(self.apify_actor).call(
             run_input={"startUrls": [{"url": self.url}]}
         )
-        print(datetime.now(), "Loading documents. Please wait...")
         loader = ApifyDatasetLoader(
             dataset_id=actor_run_info["defaultDatasetId"],
             dataset_mapping_function=lambda item: Document(
@@ -115,11 +113,6 @@ class ArticleScraper:
             chunk_size=1000, chunk_overlap=100
         )
         chunks = text_splitter.split_documents(documents)
-
-        print(
-            datetime.now(),
-            f"Split {len(documents)} documents into {len(chunks)} chunks.",
-        )
         return chunks
 
     def start_vectordb(self):
@@ -129,7 +122,7 @@ class ArticleScraper:
             index_name=self.pinecone_index,
             namespace=self.extract_namespace(),
         )
-    
+
     def check_pinecone_db(self):
         if self.pinecone_index in self.pinecone_client.list_indexes().names():
             self.start_vectordb()
@@ -159,35 +152,44 @@ class ArticleScraper:
                 index_name=self.pinecone_index,
                 namespace=self.extract_namespace(),
             )
-            print(datetime.now(), "All done!")
-
-    @st.cache_resource(ttl="1h")
-    def get_retriever(self):
-        return self.vectordb.as_retriever(search_type="mmr")
-
-    def create_conversation_chain(self, gemini_model):
-        messages = StreamlitChatMessageHistory()
-        memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            chat_memory=messages,
-            return_messages=True,
-        )
-        llm_model = ChatGoogleGenerativeAI(
-            model=f"model/{gemini_model}",
-            temperature=0.3,
-            google_api_key=self.gemini_key,
-        )
-        qa_chain = ConversationalRetrievalChain.from_llm(
-            llm_model,
-            retriever=self.get_retriever(),
-            memory=memory,
-            verbose=False,
-        )
-        return messages, qa_chain
 
 
+def click_button():
+    st.session_state.clicked = True
+
+
+def extract_namespace(url):
+    domain = url.split(".")[1]
+    title = url.split("/")[-1] if "/" in url else "no-title"
+    return f"{domain}-{title}"
+
+store = {}
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    if session_id not in store:
+        store[session_id] = StreamlitChatMessageHistory(key="langchain_messages")
+    return store[session_id]
+
+@st.cache_resource(ttl="1h")
+def get_retriever():
+    embedding_function = GoogleGenerativeAIEmbeddings(
+        google_api_key=os.environ["GOOGLE_API_KEY"],
+        model="models/text-embedding-004",
+        task_type="retrieval_document",
+        title="article scrapping",
+    )
+    vectordb = PineconeVectorStore(
+        pinecone_api_key=os.environ["PINECONE_API_KEY"],
+        embedding=embedding_function,
+        index_name="study-buddy-test",
+        namespace=extract_namespace(url),
+    )
+    return vectordb.as_retriever(search_type="mmr")
+
+st.set_page_config(page_title="Study Buddy", page_icon="🦾")
 st.title("Study Buddy - Article Scrapping")
-st.caption("This app allows you to scrape a website using Google Gemini.")
+st.caption(
+    "This app allows you to scrape a website and chat with it using Google Gemini."
+)
 model = st.radio(
     "Select model:",
     [
@@ -196,25 +198,104 @@ model = st.radio(
     ],
     index=0,
 )
-url = st.text_input("Enter the URL of the article you want to study")
+temperature = st.slider(
+    label="Select model's temperature:",
+    min_value=0.0, 
+    max_value=1.0, 
+    value=0.3, 
+    step=0.1
+)
+llm_model = ChatGoogleGenerativeAI(
+    model=model,
+    temperature=temperature,
+    google_api_key=os.environ["GOOGLE_API_KEY"],
+)
 
-if st.button("Scrape"):
-    scraper = ArticleScraper(article_url=url)
-    scraper.save_to_pinecone()
+url = st.text_input("Enter the URL of the article you want to study:")
+if "clicked" not in st.session_state:
+    st.session_state.clicked = False
 
-    msgs, qa = scraper.create_conversation_chain(gemini_model=model)
+if "scraped" not in st.session_state:
+    st.session_state.scraped = False
 
-    if st.sidebar.button("Clear message history") or len(msgs.messages) == 0:
+st.button("Scrape", on_click=click_button)
+if st.session_state.clicked:
+    with st.spinner(text="Scraping article..."):
+        scraper = ArticleScraper(article_url=url)
+        scraper.save_to_pinecone()
+    st.session_state.scraped = True
+
+if st.session_state.scraped:
+    retriever = get_retriever()
+    msgs = StreamlitChatMessageHistory(key="langchain_messages")
+    memory = ConversationBufferMemory(
+        memory_key="chat_history",
+        chat_memory=msgs,
+        return_messages=True,
+    )
+
+    if st.sidebar.button("Clear message history"):
         msgs.clear()
+    if len(msgs.messages) == 0:
         msgs.add_ai_message(f"Ask me anything about {url}!")
 
-    avatars = {"human": "user", "ai": "assistant"}
+    contextualize_question_system_prompt = """
+    Given the chat history and the latest user question, which might reference 
+    context in the chat history, formulate a standalone question which can be 
+    undestood without the chat history. Do not answer the question, just reformulate 
+    it if needed, otherwise return it as is.
+    """
+    qa_system_prompt = """
+    You are a personalized assistant for question answering tasks for students. Use 
+    the following retrieved context to answer the question. If you don't know the 
+    answer, say that you don't know. Keep the answer concise.
+    
+    Context: 
+    <<<
+    {context}
+    >>>
+    """
+    contextualize_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", contextualize_question_system_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{input}"),
+        ]
+    )
+    qa_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", qa_system_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{input}"),
+        ]
+    )
+    history_aware_retriever = create_history_aware_retriever(
+        llm_model, retriever, contextualize_prompt
+    )
+    question_answer_chain = create_stuff_documents_chain(llm_model, qa_prompt)
+    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+
+    conversational_rag_chain = RunnableWithMessageHistory(
+        rag_chain,
+        get_session_history,
+        input_messages_key="input",
+        history_messages_key="history",
+        output_messages_key="answer",
+    )
+
     for msg in msgs.messages:
-        st.chat_message(avatars[msg.type]).write(msg.content)
+        st.chat_message(msg.type).write(msg.content)
 
     if user_query := st.chat_input(placeholder="Ask me anything!"):
         st.chat_message("user").write(user_query)
 
         with st.chat_message("assistant"):
             stream_handler = StreamHandler(st.empty())
-            response = qa.run(user_query, callbacks=[stream_handler])
+            response = conversational_rag_chain.invoke(
+                input={"input": user_query},
+                config={
+                    "configurable": {"session_id": "test_1"}
+                }
+            )
+            st.write(response["answer"])
+
