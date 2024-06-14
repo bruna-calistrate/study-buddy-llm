@@ -185,10 +185,15 @@ def get_retriever():
     )
     return vectordb.as_retriever(search_type="mmr")
 
-st.set_page_config(page_title="Study Buddy", page_icon="🦾")
-st.title("Study Buddy - Article Scrapping")
-st.caption(
-    "This app allows you to scrape a website and chat with it using Google Gemini."
+st.set_page_config(
+    page_title="Study Buddy", 
+    page_icon="🦾",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+st.title("Article Scraper")
+st.write(
+    "Enter an article and start chatting with it using Google Gemini!"
 )
 model = st.radio(
     "Select model:",
@@ -200,9 +205,9 @@ model = st.radio(
 )
 temperature = st.slider(
     label="Select model's temperature:",
-    min_value=0.0, 
+    min_value=0.0,
     max_value=1.0, 
-    value=0.3, 
+    value=0.3,
     step=0.1
 )
 llm_model = ChatGoogleGenerativeAI(
@@ -224,6 +229,8 @@ if st.session_state.clicked:
         scraper = ArticleScraper(article_url=url)
         scraper.save_to_pinecone()
     st.session_state.scraped = True
+    st.session_state.clicked = False
+    st.divider()
 
 if st.session_state.scraped:
     retriever = get_retriever()

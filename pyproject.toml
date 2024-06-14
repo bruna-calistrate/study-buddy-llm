@@ -78,7 +78,7 @@ extend_skip = ['migrations']
 [tool.taskipy.tasks]
 lint = 'ruff . && black --check . --diff'
 format = 'black .  && isort .'
-run = 'streamlit run app/main.py'
+run = 'streamlit run app/Home.py'
 pre_test = 'task lint'
 test = 'pytest -s -x --cov=app -vv'
 post_test = 'coverage html'
