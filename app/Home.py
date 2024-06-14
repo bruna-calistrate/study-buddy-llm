@@ -1,12 +1,8 @@
-
 import streamlit as st
-
-
 
 st.set_page_config(
     page_title="Study Buddy",
     page_icon="🦾",
-    
 )
 st.title("Welcome to Study Buddy!")
 
