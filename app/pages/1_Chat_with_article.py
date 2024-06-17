@@ -6,21 +6,11 @@ import streamlit as st
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 from langchain.callbacks.base import BaseCallbackHandler
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains.history_aware_retriever import (
-    create_history_aware_retriever,
-)
-from langchain.chains.retrieval import create_retrieval_chain
-from langchain.memory import ConversationBufferMemory
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.chat_message_histories import (
-    StreamlitChatMessageHistory,
-)
 from langchain_community.document_loaders import ApifyDatasetLoader
-from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import (
     ChatGoogleGenerativeAI,
     GoogleGenerativeAIEmbeddings,
@@ -112,7 +102,7 @@ class ArticleScraper:
         documents = self.load_documents()
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=200, chunk_overlap=10
-        ) 
+        )
         st.write("Splitting documents...")
         chunks = text_splitter.split_documents(documents)
         return chunks
@@ -131,13 +121,13 @@ class ArticleScraper:
             index_stats = self.pinecone_client.Index(
                 name=self.pinecone_index
             ).describe_index_stats()
-            namespaces = index_stats.get('namespaces')
+            namespaces = index_stats.get("namespaces")
             if isinstance(namespaces, dict) is False:
                 return 0
             article_vector_count = namespaces.get(self.article_namespace, 0)
             if isinstance(article_vector_count, int):
                 return 0
-            return article_vector_count.get('vector_count')
+            return article_vector_count.get("vector_count")
 
         self.pinecone_client.create_index(
             name=self.pinecone_index,
@@ -168,43 +158,49 @@ class ArticleScraper:
                 namespace=self.article_namespace,
             )
 
+    def generate_context(self, question):
+        self.start_vectordb()
+        results = self.vectordb.similarity_search(question, k=4)
+        if len(results) == 0:
+            print("Unable to find matching results.")
+            return None
+        return results
+
 
 def click_button():
     st.session_state.clicked = True
 
 
-def extract_namespace(url):
-    domain = url.split(".")[1]
-    title = url.split("/")[-1] if "/" in url else "no-title"
+def extract_namespace(url_path):
+    if url_path is None or url_path == "":
+        return ""
+    domain = str(url_path).split(".")[1]
+    title = str(url_path).split("/")[-1] if "/" in str(url_path) else "no-title"
     return f"{domain}-{title}"
 
 
-store = {}
+CONTEXTUALIZE_QUESTION_SYSTEM_PROMPT = """
+Given the chat history and the latest user question, which might reference
+context in the chat history, formulate a standalone question which can be
+undestood without the chat history. Do not answer the question, just reformulate
+it if needed, otherwise return it as is.
+"""
 
+QA_SYSTEM_PROMPT = """
+You are a personalized assistant for question answering tasks for students. Use
+the following retrieved context to answer the question. If you don't know the
+answer, say that you don't know. Keep the answer concise.
 
-def get_session_history(session_id: str) -> BaseChatMessageHistory:
-    if session_id not in store:
-        store[session_id] = StreamlitChatMessageHistory(
-            key="langchain_messages"
-        )
-    return store[session_id]
+Context:
+<<<
+{context}
+>>>
 
-
-@st.cache_resource(ttl="1h")
-def get_retriever():
-    embedding_function = GoogleGenerativeAIEmbeddings(
-        google_api_key=os.environ["GOOGLE_API_KEY"],
-        model="models/text-embedding-004",
-        task_type="retrieval_document",
-        title="article scrapping",
-    )
-    vectordb = PineconeVectorStore(
-        pinecone_api_key=os.environ["PINECONE_API_KEY"],
-        embedding=embedding_function,
-        index_name="study-buddy-test",
-        namespace=extract_namespace(url),
-    )
-    return vectordb.as_retriever(search_type="mmr")
+Question:
+<<<
+{question}
+>>>
+"""
 
 
 st.set_page_config(
@@ -244,92 +240,58 @@ if "scraped" not in st.session_state:
     st.session_state.scraped = False
 
 st.button("Scrape", on_click=click_button)
+
 if st.session_state.clicked:
+    scraper = ArticleScraper(article_url=url)
     with st.status("Scraping article...") as status:
         scraper = ArticleScraper(article_url=url)
         scraper.save_to_pinecone()
         status.update(label="Article scraped!", state="complete")
     st.session_state.scraped = True
     st.session_state.clicked = False
-    st.divider()
+
+st.divider()
 
 if st.session_state.scraped:
-    retriever = get_retriever()
-    msgs = StreamlitChatMessageHistory(key="langchain_messages")
-    memory = ConversationBufferMemory(
-        memory_key="chat_history",
-        chat_memory=msgs,
-        return_messages=True,
-    )
+    output_parser = StrOutputParser()
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
     if st.sidebar.button("Clear message history"):
-        msgs.clear()
-    if len(msgs.messages) == 0:
-        msgs.add_ai_message("How can i help you today?")
+        st.session_state.messages = []
+    if len(st.session_state.messages) == 0:
+        st.session_state.messages.append(
+            {"type": "assistant", "content": "How can i help you today?"}
+        )
 
-    contextualize_question_system_prompt = """
-    Given the chat history and the latest user question, which might reference 
-    context in the chat history, formulate a standalone question which can be 
-    undestood without the chat history. Do not answer the question, just reformulate 
-    it if needed, otherwise return it as is.
-    """
-    qa_system_prompt = """
-    You are a personalized assistant for question answering tasks for students. Use 
-    the following retrieved context to answer the question. If you don't know the 
-    answer, say that you don't know. Keep the answer concise.
-    
-    Context: 
-    <<<
-    {context}
-    >>>
-    """
-    qa_template = ChatPromptTemplate.from_template(
-        qa_system_prompt
-    )
-    contextualize_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", contextualize_question_system_prompt),
-            MessagesPlaceholder(variable_name="history"),
-            ("human", "{input}"),
-        ]
-    )
-    qa_context = ChatPromptTemplate.from_messages(
-        [
-            ("system", qa_system_prompt),
-            MessagesPlaceholder(variable_name="context"),
-            ("human", "{input}"),
-        ]
-    )
-    # qa_prompt = qa_template.format(context=qa_context)
-    print("qa-context:", qa_context, "\n")
-    history_aware_retriever = create_history_aware_retriever(
-        llm_model, retriever, contextualize_prompt
-    )
-    question_answer_chain = create_stuff_documents_chain(llm_model, qa_context)
-    print("qa-chain:", question_answer_chain, "\n")
-    rag_chain = create_retrieval_chain(
-        history_aware_retriever, question_answer_chain
-    )
-    print("rag-chain:", rag_chain, "\n")
-
-    conversational_rag_chain = RunnableWithMessageHistory(
-        rag_chain,
-        get_session_history,
-        input_messages_key="input",
-        history_messages_key="history",
-        output_messages_key="answer",
-    )
-
-    for msg in msgs.messages:
-        st.chat_message(msg.type).write(msg.content)
+    for msg in st.session_state.messages:
+        st.chat_message(msg["type"]).write(msg["content"])
 
     if user_query := st.chat_input(placeholder="Ask me anything!"):
         st.chat_message("user").write(user_query)
+        st.session_state.messages.append(
+            {"type": "user", "content": user_query}
+        )
+
+        scraper = ArticleScraper(article_url=url)
+
+        results = scraper.generate_context(user_query)
+        context = "\n---\n".join([doc.page_content for doc in results])
+        sources = [doc.metadata.get("source", None) for doc in results]
+
+        qa_template = ChatPromptTemplate.from_template(QA_SYSTEM_PROMPT)
+        prompt = qa_template.format(context=context, question=user_query)
+        print(prompt)
+        chain = qa_template | llm_model | output_parser
 
         with st.chat_message("assistant"):
             stream_handler = StreamHandler(st.empty())
-            response = conversational_rag_chain.invoke(
-                input={"input": user_query},
+            response = chain.invoke(
+                input={"context": context, "question": user_query},
                 config={"configurable": {"session_id": "test_1"}},
             )
-            st.write(response["answer"])
+
+            st.write(response)
+            st.session_state.messages.append(
+                {"type": "assistant", "content": response}
+            )
