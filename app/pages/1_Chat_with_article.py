@@ -6,9 +6,11 @@ import streamlit as st
 from apify_client import ApifyClient
 from dotenv import load_dotenv
 from langchain.callbacks.base import BaseCallbackHandler
-from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains.history_aware_retriever import create_history_aware_retriever
+from langchain.chains.history_aware_retriever import (
+    create_history_aware_retriever,
+)
+from langchain.chains.retrieval import create_retrieval_chain
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -46,6 +48,7 @@ class ArticleScraper:
         load_dotenv()
 
         self.url = article_url.strip()
+        self.article_namespace = extract_namespace(self.url)
         self.gemini_key = os.getenv("GOOGLE_API_KEY")
         self.pinecone_key = os.getenv("PINECONE_API_KEY")
         self.pinecone_index = "study-buddy-test"
@@ -64,11 +67,6 @@ class ArticleScraper:
             title="article scrapping",
         )
 
-    def extract_namespace(self):
-        domain = self.url.split(".")[1]
-        title = self.url.split("/")[-1] if "/" in self.url else "no-title"
-        return f"{domain}-{title}"
-
     def check_loaded_documents(self):
         actor = self.apify_actor.replace("/", "~")
         actor_url = (
@@ -84,6 +82,7 @@ class ArticleScraper:
         return None
 
     def load_documents(self):
+        st.write("Checking documents on apify...")
         check_last_run = self.check_loaded_documents()
         if isinstance(check_last_run, dict):
             loader_list = []
@@ -95,6 +94,7 @@ class ArticleScraper:
                 loader_list.append(doc)
             return loader_list
 
+        st.write("Loading article...")
         actor_run_info = self.apify_client.actor(self.apify_actor).call(
             run_input={"startUrls": [{"url": self.url}]}
         )
@@ -108,10 +108,12 @@ class ArticleScraper:
         return loader.load()
 
     def generate_chunks(self):
+        st.write("Loading documents...")
         documents = self.load_documents()
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000, chunk_overlap=100
-        )
+            chunk_size=200, chunk_overlap=10
+        ) 
+        st.write("Splitting documents...")
         chunks = text_splitter.split_documents(documents)
         return chunks
 
@@ -120,7 +122,7 @@ class ArticleScraper:
             pinecone_api_key=self.pinecone_key,
             embedding=self.embedding_function,
             index_name=self.pinecone_index,
-            namespace=self.extract_namespace(),
+            namespace=self.article_namespace,
         )
 
     def check_pinecone_db(self):
@@ -129,7 +131,13 @@ class ArticleScraper:
             index_stats = self.pinecone_client.Index(
                 name=self.pinecone_index
             ).describe_index_stats()
-            return index_stats.get("total_vector_count", 0)
+            namespaces = index_stats.get('namespaces')
+            if isinstance(namespaces, dict) is False:
+                return 0
+            article_vector_count = namespaces.get(self.article_namespace, 0)
+            if isinstance(article_vector_count, int):
+                return 0
+            return article_vector_count.get('vector_count')
 
         self.pinecone_client.create_index(
             name=self.pinecone_index,
@@ -141,16 +149,23 @@ class ArticleScraper:
         return 0
 
     def save_to_pinecone(self):
+        st.write("Checking Pinecone for existing namespace...")
+        print(datetime.now(), "Checking Pinecone for existing namespace...")
         check_vector_db = self.check_pinecone_db()
         if check_vector_db > 0:
-            print(datetime.now(), "All done, data already loaded!")
+            st.write(f"Data already loaded into {check_vector_db} vectors!")
+            print(datetime.now(), "Data already loaded!")
         else:
+            st.write("Generating chunks...")
+            print(datetime.now(), "Generating chunks")
             chunks = self.generate_chunks()
+            st.write("Saving to Pinecone...")
+            print(datetime.now(), "Saving to Pinecone")
             self.vectordb.from_documents(
                 documents=chunks,
                 embedding=self.embedding_function,
                 index_name=self.pinecone_index,
-                namespace=self.extract_namespace(),
+                namespace=self.article_namespace,
             )
 
 
@@ -163,11 +178,17 @@ def extract_namespace(url):
     title = url.split("/")[-1] if "/" in url else "no-title"
     return f"{domain}-{title}"
 
+
 store = {}
+
+
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
     if session_id not in store:
-        store[session_id] = StreamlitChatMessageHistory(key="langchain_messages")
+        store[session_id] = StreamlitChatMessageHistory(
+            key="langchain_messages"
+        )
     return store[session_id]
+
 
 @st.cache_resource(ttl="1h")
 def get_retriever():
@@ -185,16 +206,15 @@ def get_retriever():
     )
     return vectordb.as_retriever(search_type="mmr")
 
+
 st.set_page_config(
-    page_title="Study Buddy", 
+    page_title="Study Buddy",
     page_icon="🦾",
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 st.title("Article Scraper")
-st.write(
-    "Enter an article and start chatting with it using Google Gemini!"
-)
+st.write("Enter an article and start chatting with it using Google Gemini!")
 model = st.radio(
     "Select model:",
     [
@@ -206,9 +226,9 @@ model = st.radio(
 temperature = st.slider(
     label="Select model's temperature:",
     min_value=0.0,
-    max_value=1.0, 
+    max_value=1.0,
     value=0.3,
-    step=0.1
+    step=0.1,
 )
 llm_model = ChatGoogleGenerativeAI(
     model=model,
@@ -225,9 +245,10 @@ if "scraped" not in st.session_state:
 
 st.button("Scrape", on_click=click_button)
 if st.session_state.clicked:
-    with st.spinner(text="Scraping article..."):
+    with st.status("Scraping article...") as status:
         scraper = ArticleScraper(article_url=url)
         scraper.save_to_pinecone()
+        status.update(label="Article scraped!", state="complete")
     st.session_state.scraped = True
     st.session_state.clicked = False
     st.divider()
@@ -244,7 +265,7 @@ if st.session_state.scraped:
     if st.sidebar.button("Clear message history"):
         msgs.clear()
     if len(msgs.messages) == 0:
-        msgs.add_ai_message(f"Ask me anything about {url}!")
+        msgs.add_ai_message("How can i help you today?")
 
     contextualize_question_system_prompt = """
     Given the chat history and the latest user question, which might reference 
@@ -262,6 +283,9 @@ if st.session_state.scraped:
     {context}
     >>>
     """
+    qa_template = ChatPromptTemplate.from_template(
+        qa_system_prompt
+    )
     contextualize_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", contextualize_question_system_prompt),
@@ -269,18 +293,24 @@ if st.session_state.scraped:
             ("human", "{input}"),
         ]
     )
-    qa_prompt = ChatPromptTemplate.from_messages(
+    qa_context = ChatPromptTemplate.from_messages(
         [
             ("system", qa_system_prompt),
-            MessagesPlaceholder(variable_name="history"),
+            MessagesPlaceholder(variable_name="context"),
             ("human", "{input}"),
         ]
     )
+    # qa_prompt = qa_template.format(context=qa_context)
+    print("qa-context:", qa_context, "\n")
     history_aware_retriever = create_history_aware_retriever(
         llm_model, retriever, contextualize_prompt
     )
-    question_answer_chain = create_stuff_documents_chain(llm_model, qa_prompt)
-    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+    question_answer_chain = create_stuff_documents_chain(llm_model, qa_context)
+    print("qa-chain:", question_answer_chain, "\n")
+    rag_chain = create_retrieval_chain(
+        history_aware_retriever, question_answer_chain
+    )
+    print("rag-chain:", rag_chain, "\n")
 
     conversational_rag_chain = RunnableWithMessageHistory(
         rag_chain,
@@ -300,9 +330,6 @@ if st.session_state.scraped:
             stream_handler = StreamHandler(st.empty())
             response = conversational_rag_chain.invoke(
                 input={"input": user_query},
-                config={
-                    "configurable": {"session_id": "test_1"}
-                }
+                config={"configurable": {"session_id": "test_1"}},
             )
             st.write(response["answer"])
-
